@@ -549,7 +549,7 @@ Status Handle::gemm_universal(
   );
 
   auto operators_it = Singleton::get().operation_table.gemm_operations.find(key);
-
+  // std::cout << key << std::endl;
   if (operators_it == Singleton::get().operation_table.gemm_operations.end()) {
     std::cout << "Can not find the key among "
               << Singleton::get().operation_table.gemm_operations.size()
@@ -560,7 +560,7 @@ Status Handle::gemm_universal(
       if (gemm_func.gemm_kind == GemmKind::kUniversal && gemm_func.provider == provider_)
         std::cout << gemm_func << std::endl;
     }
-    std::cout << key << std::endl;
+    std::cout << "Current key " << key << std::endl;
     return cutlass::Status::kErrorNotSupported;
   }
   

@@ -79,12 +79,21 @@ struct Options {
   float alpha;
   float beta;
 
+  std::string A;
+  std::string B;
+  std::string C;
+  std::string accum;
+
   bool reference_check;
   int iterations;
   
   Options():
     help(false),
     problem_size({1024, 1024, 1024}),
+    A("f32"),
+    B("f32"),
+    C("f32"),
+    accum("f32"),
     batch_count(1),
     reference_check(true),
     iterations(20),
@@ -107,7 +116,12 @@ struct Options {
     cmd.get_cmd_line_argument("n", problem_size.n());
     cmd.get_cmd_line_argument("k", problem_size.k());
     cmd.get_cmd_line_argument("batch", batch_count);
-    
+
+    cmd.get_cmd_line_argument("A", A);
+    cmd.get_cmd_line_argument("B", B);
+    cmd.get_cmd_line_argument("C", C);
+    cmd.get_cmd_line_argument("accum", accum);
+
     cmd.get_cmd_line_argument("alpha", alpha);
     cmd.get_cmd_line_argument("beta", beta);
     
@@ -118,20 +132,24 @@ struct Options {
   std::ostream & print_usage(std::ostream &out) const {
 
     out << "18_cross_device_predict example\n\n"
-      << "  This example uses the CUTLASS Library to execute GEMM computations.\n\n"
-      << "Options:\n\n"
-      << "  --help                      If specified, displays this usage statement.\n\n"
-      << "  --m <int>                   GEMM M dimension\n"
-      << "  --n <int>                   GEMM N dimension\n"
-      << "  --k <int>                   GEMM K dimension\n"
-      << "  --batch <int>               Number of GEMM operations executed in one batch\n"
-      << "  --alpha <f32>               Epilogue scalar alpha\n"
-      << "  --beta <f32>                Epilogue scalar beta\n\n"
-      << "  --iterations <int>          Number of profiling iterations to perform.\n\n";
+        << "  This example uses the CUTLASS Library to execute GEMM computations.\n\n"
+        << "Options:\n\n"
+        << "  --help                      If specified, displays this usage statement.\n\n"
+        << "  --m <int>                   GEMM M dimension\n"
+        << "  --n <int>                   GEMM N dimension\n"
+        << "  --k <int>                   GEMM K dimension\n"
+        << "  --A <string>                Matrix A data type\n"
+        << "  --B <string>                Matrix B data type\n"
+        << "  --C <string>                Matrix C data type\n"
+        << "  --accum <string>            Accumulator data type\n"
+        << "  --batch <int>               Number of GEMM operations executed in one batch\n"
+        << "  --alpha <f32>               Epilogue scalar alpha\n"
+        << "  --beta <f32>                Epilogue scalar beta\n\n"
+        << "  --iterations <int>          Number of profiling iterations to perform.\n\n";
 
     out << "\n\nExamples:\n\n"
-      << "$ ./examples/18_cross_device_predict/18_cross_device_predict  --batch=7 --m=1024 --n=512 --k=1024 \\\n"
-      << "     --alpha=2 --beta=0.707\n\n";
+        << "$ ./examples/18_cross_device_predict/18_cross_device_predict  --batch=7 --m=1024 --n=512 --k=1024 \\\n"
+        << "     --alpha=2 --beta=0.707 --A=f16 --B=f16 --C=f16 --accum=f16 \n\n";
 
     return out;
   }
@@ -153,28 +171,18 @@ struct Options {
 class TestbedGEMM {
 public:
 
-  using ElementA = cutlass::half_t;
-  using LayoutA = cutlass::layout::ColumnMajor;
-  using ElementB = cutlass::half_t;
-  using LayoutB = cutlass::layout::ColumnMajor;
-  using ElementC = cutlass::half_t;
-  using LayoutC = cutlass::layout::ColumnMajor;
-  using ElementCompute = float;
-  using ElementAccumulator = float;
-
   //
   // Data members
   //
+  void const *ptr_A;
+  void const *ptr_B;
+  void const *ptr_C;
+  void *ptr_D;
 
   cutlass::library::Handle handle;
 
   cutlass::gemm::GemmCoord problem_size;
   int batch_count;
-  cutlass::DeviceAllocation<ElementA> tensor_A;
-  cutlass::DeviceAllocation<ElementB> tensor_B;
-  cutlass::DeviceAllocation<ElementC> tensor_C;
-  cutlass::DeviceAllocation<ElementC> tensor_D;
-  cutlass::DeviceAllocation<ElementC> tensor_D_ref;
 
   //
   // Methods
@@ -183,17 +191,14 @@ public:
   TestbedGEMM(
     Options const &options
   ): 
-    problem_size(options.problem_size), batch_count(options.batch_count) {
+    problem_size(options.problem_size), batch_count(options.batch_count) {}
 
-    // Allocate device memory for GEMM
-    tensor_A.reset(int64_t(problem_size.m()) * problem_size.k());
-    tensor_B.reset(int64_t(problem_size.k()) * problem_size.n());
-    tensor_C.reset(int64_t(problem_size.m()) * problem_size.n());
-    tensor_D.reset(int64_t(problem_size.m()) * problem_size.n());
-    tensor_D_ref.reset(int64_t(problem_size.m()) * problem_size.n());
-  }
-
-  void initialize() {
+  template <typename T_A, typename T_B, typename T_C>
+  void initialize(
+      cutlass::DeviceAllocation<T_A> &tensor_A,
+      cutlass::DeviceAllocation<T_B> &tensor_B,
+      cutlass::DeviceAllocation<T_C> &tensor_C)
+  {
 
     uint64_t seed = 1073;
 
@@ -202,30 +207,97 @@ public:
     int scope_min = -6;
 
     cutlass::reference::device::BlockFillRandomUniform(
-        tensor_A.get(), tensor_A.size(), seed, ElementA(scope_max), ElementA(scope_min), 0);
+        tensor_A.get(), tensor_A.size(), seed, T_A(scope_max), T_A(scope_min), 0);
 
     cutlass::reference::device::BlockFillRandomUniform(
-        tensor_B.get(), tensor_B.size(), seed * 2019, ElementB(scope_max), ElementB(scope_min), 0);
+        tensor_B.get(), tensor_B.size(), seed * 2019, T_B(scope_max), T_B(scope_min), 0);
 
     cutlass::reference::device::BlockFillRandomUniform(
-        tensor_C.get(), tensor_C.size(), seed * 2020, ElementC(scope_max), ElementC(scope_min), 0);
+        tensor_C.get(), tensor_C.size(), seed * 2020, T_C(scope_max), T_C(scope_min), 0);
+  }
+
+  template <typename T>
+  void reset(T tensor_ptr, std::string const &role) {
+    if (role == "A") {
+      tensor_ptr->reset(int64_t(problem_size.m()) * problem_size.k() * batch_count);
+    } else if (role == "B") {
+      tensor_ptr->reset(int64_t(problem_size.k()) * problem_size.n() * batch_count);
+    } else if (role == "C") {
+      tensor_ptr->reset(int64_t(problem_size.m()) * problem_size.n() * batch_count);
+    } else if (role == "D") {
+      tensor_ptr->reset(int64_t(problem_size.m()) * problem_size.n() * batch_count);
+    }
+  }
+
+  void *allocate_matrix(
+      std::string const &type_string,
+      cutlass::library::NumericTypeID &type,
+      std::string const &role)
+  {
+    void * ptr_;
+    void * ret;
+    uint64_t seed = 1073;
+
+    // Use small integers to simplify correctness checking
+    int scope_max = 6;
+    int scope_min = -6;
+
+    if (type_string == "f16") {
+      ptr_ = new (cutlass::DeviceAllocation<cutlass::half_t>);
+      reset((cutlass::DeviceAllocation<cutlass::half_t> *)(ptr_), role);
+      cutlass::reference::device::BlockFillRandomUniform(
+          ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->get(), 
+          ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->size(), 
+          seed, cutlass::half_t(scope_max), cutlass::half_t(scope_min), 0);
+      ret = ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->get();
+      type = cutlass::library::NumericTypeID::kF16;
+    }
+    else if (type_string == "f32") {
+      ptr_ = new (cutlass::DeviceAllocation<float>);
+      reset((cutlass::DeviceAllocation<float> *)(ptr_), role);
+      // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
+      cutlass::reference::device::BlockFillRandomUniform(
+          ((cutlass::DeviceAllocation<float> *)(ptr_))->get(),
+          ((cutlass::DeviceAllocation<float> *)(ptr_))->size(),
+          seed, float(scope_max), float(scope_min), 0);
+      ret = ((cutlass::DeviceAllocation<float> *)(ptr_))->get();
+      // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
+      type = cutlass::library::NumericTypeID::kF32;
+    }
+    else {
+      std::cout << "Invalid NumericTypeID: " << type_string 
+            << ", should be one of [f16|f32]" << std::endl;
+      exit(1);
+    }
+    return ret;
   }
 
   Result profile(Options const &options) {
 
     Result result;
 
-    initialize();
+    cutlass::library::NumericTypeID type_A;
+    cutlass::library::NumericTypeID type_B;
+    cutlass::library::NumericTypeID type_C;
+    cutlass::library::NumericTypeID type_accum;
 
-    ElementA *ptr_A = tensor_A.get();
-    ElementB *ptr_B = tensor_B.get();
-    ElementC *ptr_C = tensor_C.get();
-    ElementC *ptr_D = tensor_D.get();
+    // Allocate device memory for GEMM
+    void *ptr_A = allocate_matrix(options.A, type_A, "A");
+    void *ptr_B = allocate_matrix(options.B, type_B, "B");
+    void *ptr_C = allocate_matrix(options.C, type_C, "C");
+    void *ptr_D = allocate_matrix(options.C, type_C, "D");
+
+    allocate_matrix(options.accum, type_accum, "null");
+    // initialize(*ptr_A, *ptr_B, *ptr_C);
 
     int64_t batch_stride_A = int64_t(problem_size.m()) * problem_size.k();
     int64_t batch_stride_B = int64_t(problem_size.k()) * problem_size.n();
     int64_t batch_stride_C = int64_t(problem_size.m()) * problem_size.n();
     int64_t batch_stride_D = int64_t(problem_size.m()) * problem_size.n();
+
+    using LayoutA = cutlass::layout::ColumnMajor;
+    using LayoutB = cutlass::layout::ColumnMajor;
+    using LayoutC = cutlass::layout::ColumnMajor;
 
     int lda = LayoutA::packed({problem_size.m(), problem_size.k()}).stride(0);
     int ldb = LayoutB::packed({problem_size.k(), problem_size.n()}).stride(0);
@@ -278,26 +350,26 @@ public:
           problem_size.n(), // GEMM N dimension
           problem_size.k(), // GEMM K dimension
 
-          cutlass::library::NumericTypeID::kF32, // Base data type of complex-valued accumulation
-          cutlass::library::NumericTypeID::kF32, // Base data type of complex-valued alpha/beta scalars
+          type_accum, // Base data type of complex-valued accumulation
+          type_accum, // Base data type of complex-valued alpha/beta scalars
 
           &options.alpha, // Pointer to alpha scalar, of type complex<T>
 
-          cutlass::library::NumericTypeID::kF32,          // Base data type of complex-valued A matrix
-          cutlass::library::LayoutTypeID::kColumnMajor,   // Layout of A matrix
-          cutlass::library::ComplexTransform::kNone, // Complex transformation on A matrix operand
-          ptr_A,                                          // Pointer to A matrix in Global Memory
-          lda,                                            // Leading dimension of A matrix
+          type_A,                                       // Base data type of complex-valued A matrix
+          cutlass::library::LayoutTypeID::kColumnMajor, // Layout of A matrix
+          cutlass::library::ComplexTransform::kNone,    // Complex transformation on A matrix operand
+          ptr_A,                                        // Pointer to A matrix in Global Memory
+          lda,                                          // Leading dimension of A matrix
 
-          cutlass::library::NumericTypeID::kF32,          // Base data type of complex-valued B matrix
-          cutlass::library::LayoutTypeID::kColumnMajor,   // Layout of B matrix
-          cutlass::library::ComplexTransform::kNone, // Complex transformation on B matrix operand
-          ptr_B,                                          // Pointer to B matrix in Global Memory
-          ldb,                                            // Leading dimension of B matrix
+          type_B,                                       // Base data type of complex-valued B matrix
+          cutlass::library::LayoutTypeID::kColumnMajor, // Layout of B matrix
+          cutlass::library::ComplexTransform::kNone,    // Complex transformation on B matrix operand
+          ptr_B,                                        // Pointer to B matrix in Global Memory
+          ldb,                                          // Leading dimension of B matrix
 
           &options.beta, // Pointer to beta scalar, of type complex<T>
 
-          cutlass::library::NumericTypeID::kF32, // Base data type of complex valued C and D matrices
+          type_C, // Base data type of complex valued C and D matrices
 
           ptr_C, // Pointer to C matrix
           ldc,   // Leading dimension of C matrix

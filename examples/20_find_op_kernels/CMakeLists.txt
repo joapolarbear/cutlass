@@ -23,8 +23,8 @@
 
 # Cross-device predictor
 cutlass_example_add_executable(
-  18_cross_device_predict
-  cross_device_predict.cu
+  20_find_op_kernels
+  find_op_kernels.cu
 )
 
 
@@ -33,7 +33,7 @@ cutlass_example_add_executable(
 #
 
 target_link_libraries(
-  18_cross_device_predict
+  20_find_op_kernels
   PRIVATE
   cutlass_lib
   cutlass_tools_util_includes

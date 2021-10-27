@@ -251,8 +251,7 @@ public:
           seed, cutlass::half_t(scope_max), cutlass::half_t(scope_min), 0);
       ret = ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->get();
       type = cutlass::library::NumericTypeID::kF16;
-    }
-    else if (type_string == "f32") {
+    } else if (type_string == "f32") {
       ptr_ = new (cutlass::DeviceAllocation<float>);
       reset((cutlass::DeviceAllocation<float> *)(ptr_), role);
       // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
@@ -263,8 +262,7 @@ public:
       ret = ((cutlass::DeviceAllocation<float> *)(ptr_))->get();
       // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
       type = cutlass::library::NumericTypeID::kF32;
-    }
-    else {
+    } else {
       std::cout << "Invalid NumericTypeID: " << type_string 
             << ", should be one of [f16|f32]" << std::endl;
       exit(1);

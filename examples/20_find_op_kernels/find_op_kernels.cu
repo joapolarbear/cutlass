@@ -87,6 +87,7 @@ struct Options {
   int cc_major;
   int cc_minor;
 
+  std::string operation;
   // GEMM options
   cutlass::gemm::GemmCoord problem_size;
 
@@ -96,6 +97,7 @@ struct Options {
   
   Options():
     help(false),
+    operation("GEMM"),
     A("f32"),
     B("f32"),
     C("f32"),
@@ -124,6 +126,8 @@ struct Options {
 
     cmd.get_cmd_line_argument("batch", batch_count);
 
+    cmd.get_cmd_line_argument("operation", operation);
+
     cmd.get_cmd_line_argument("A", A);
     cmd.get_cmd_line_argument("B", B);
     cmd.get_cmd_line_argument("C", C);
@@ -151,6 +155,7 @@ struct Options {
         << "Options:\n\n"
         << "  --help                      If specified, displays this usage statement.\n\n"
         << "Common options:\n"
+        << "  --operation <string>        GEMM or Conv\n"
         << "  --A <string>                Matrix A data type\n"
         << "  --B <string>                Matrix B data type\n"
         << "  --C <string>                Matrix C data type\n"
@@ -231,8 +236,7 @@ public:
   }
 
   void *allocate_matrix(
-      std::string const &type_string,
-      cutlass::library::NumericTypeID &type,
+      const cutlass::library::NumericTypeID &type,
       std::string const &role)
   {
     void * ptr_;
@@ -243,7 +247,7 @@ public:
     int scope_max = 6;
     int scope_min = -6;
 
-    if (type_string == "f16") {
+    if (type == cutlass::library::NumericTypeID::kF16) {
       ptr_ = new (cutlass::DeviceAllocation<cutlass::half_t>);
       reset((cutlass::DeviceAllocation<cutlass::half_t> *)(ptr_), role);
       cutlass::reference::device::BlockFillRandomUniform(
@@ -251,8 +255,7 @@ public:
           ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->size(), 
           seed, cutlass::half_t(scope_max), cutlass::half_t(scope_min), 0);
       ret = ((cutlass::DeviceAllocation<cutlass::half_t>*)(ptr_))->get();
-      type = cutlass::library::NumericTypeID::kF16;
-    } else if (type_string == "f32") {
+    } else if (type == cutlass::library::NumericTypeID::kF32) {
       ptr_ = new (cutlass::DeviceAllocation<float>);
       reset((cutlass::DeviceAllocation<float> *)(ptr_), role);
       // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
@@ -262,10 +265,10 @@ public:
           seed, float(scope_max), float(scope_min), 0);
       ret = ((cutlass::DeviceAllocation<float> *)(ptr_))->get();
       // std::cout << ((cutlass::DeviceAllocation<float> *)(ptr_))->size() << std::endl;
-      type = cutlass::library::NumericTypeID::kF32;
     } else {
-      std::cout << "Invalid NumericTypeID: " << type_string 
-            << ", should be one of [f16|f32]" << std::endl;
+      std::cout << "Invalid NumericTypeID: " 
+          << cutlass::library::to_string(type, true)
+          << ", should be one of [f16|f32]" << std::endl;
       exit(1);
     }
     return ret;
@@ -295,19 +298,28 @@ public:
 
     Result result;
 
-    cutlass::library::NumericTypeID type_A;
-    cutlass::library::NumericTypeID type_B;
-    cutlass::library::NumericTypeID type_C;
-    cutlass::library::NumericTypeID type_accum;
+    cutlass::library::NumericTypeID type_A = cutlass::library::NumericTypeID::kF32;
+    cutlass::library::NumericTypeID type_B = cutlass::library::NumericTypeID::kF32;
+    cutlass::library::NumericTypeID type_C = cutlass::library::NumericTypeID::kF32;
+    cutlass::library::NumericTypeID type_accum = cutlass::library::NumericTypeID::kF32;
+
+    cutlass::library::LayoutTypeID layout_A = cutlass::library::LayoutTypeID::kColumnMajor;
+    cutlass::library::LayoutTypeID layout_B = cutlass::library::LayoutTypeID::kColumnMajor;
+    cutlass::library::LayoutTypeID layout_C = cutlass::library::LayoutTypeID::kColumnMajor;
+    cutlass::library::LayoutTypeID layout_accum = cutlass::library::LayoutTypeID::kColumnMajor;
+
+    parse_type_layout(options.A, type_A, layout_A);
+    parse_type_layout(options.B, type_B, layout_B);
+    parse_type_layout(options.C, type_C, layout_C);
+    parse_type_layout(options.accum, type_accum, layout_accum);
 
     // Allocate device memory for GEMM
-    void *ptr_A = allocate_matrix(options.A, type_A, "A");
-    void *ptr_B = allocate_matrix(options.B, type_B, "B");
-    void *ptr_C = allocate_matrix(options.C, type_C, "C");
-    void *ptr_D = allocate_matrix(options.C, type_C, "D");
+    void *ptr_A = allocate_matrix(type_A, "A");
+    void *ptr_B = allocate_matrix(type_B, "B");
+    void *ptr_C = allocate_matrix(type_C, "C");
+    void *ptr_D = allocate_matrix(type_C, "D");
+    allocate_matrix(type_accum, "null");
 
-    allocate_matrix(options.accum, type_accum, "null");
-    // initialize(*ptr_A, *ptr_B, *ptr_C);
 
     int64_t batch_stride_A = int64_t(problem_size.m()) * problem_size.k();
     int64_t batch_stride_B = int64_t(problem_size.k()) * problem_size.n();
@@ -333,17 +345,17 @@ public:
         type_accum, // Base data type of complex-valued accumulation
         type_accum, // Base data type of complex-valued alpha/beta scalars
 
-        type_A,                                       // Base data type of complex-valued A matrix
-        cutlass::library::LayoutTypeID::kColumnMajor, // Layout of A matrix
-        cutlass::library::ComplexTransform::kNone,    // Complex transformation on A matrix operand
-        ptr_A,                                        // Pointer to A matrix in Global Memory
-        lda,                                          // Leading dimension of A matrix
+        type_A,                                    // Base data type of complex-valued A matrix
+        layout_A,                                  // Layout of A matrix
+        cutlass::library::ComplexTransform::kNone, // Complex transformation on A matrix operand
+        ptr_A,                                     // Pointer to A matrix in Global Memory
+        lda,                                       // Leading dimension of A matrix
 
-        type_B,                                       // Base data type of complex-valued B matrix
-        cutlass::library::LayoutTypeID::kColumnMajor, // Layout of B matrix
-        cutlass::library::ComplexTransform::kNone,    // Complex transformation on B matrix operand
-        ptr_B,                                        // Pointer to B matrix in Global Memory
-        ldb,                                          // Leading dimension of B matrix
+        type_B,                                    // Base data type of complex-valued B matrix
+        layout_B,                                  // Layout of B matrix
+        cutlass::library::ComplexTransform::kNone, // Complex transformation on B matrix operand
+        ptr_B,                                     // Pointer to B matrix in Global Memory
+        ldb,                                       // Leading dimension of B matrix
 
         type_C, // Base data type of complex valued C and D matrices
 
@@ -376,7 +388,6 @@ public:
     cutlass::library::LayoutTypeID layout_C = cutlass::library::LayoutTypeID::kTensorNHWC;
     cutlass::library::LayoutTypeID layout_accum = cutlass::library::LayoutTypeID::kTensorNHWC;
 
-    // Allocate device memory for GEMM
     parse_type_layout(options.A, type_A, layout_A);
     parse_type_layout(options.B, type_B, layout_B);
     parse_type_layout(options.C, type_C, layout_C);
@@ -503,8 +514,14 @@ int main(int argc, char const **args) {
   }
 
   TestbedGEMM testbed(options);
-  // Result result = testbed.query_gemm(options, cc_major, cc_minor);
-  Result result = testbed.query_conv(options, cc_major, cc_minor);
+  Result result;
+  if (options.operation == "gemm") {
+    result = testbed.query_gemm(options, cc_major, cc_minor);
+  } else if (options.operation == "conv2d_fprop") {
+    result = testbed.query_conv(options, cc_major, cc_minor);
+  } else {
+    std::cout << "Invalid operation is given: " << options.operation << std::endl;
+  }
 
   return result.passed ? 0 : -1;
 }

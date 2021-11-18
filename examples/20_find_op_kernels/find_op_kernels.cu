@@ -87,6 +87,8 @@ struct Options {
 
   bool help;
 
+  bool all;
+
   int batch_count;
   float alpha;
   float beta;
@@ -99,6 +101,8 @@ struct Options {
   int cc_major;
   int cc_minor;
 
+  int alignment;
+
   std::string operation;
   // GEMM options
   cutlass::gemm::GemmCoord problem_size;
@@ -110,6 +114,7 @@ struct Options {
   
   Options():
     help(false),
+    all(false),
     operation("GEMM"),
     A("f32"),
     B("f32"),
@@ -120,6 +125,7 @@ struct Options {
     beta(1),
     cc_major(-1),
     cc_minor(-1),
+    alignment(16),
     problem_size({1024, 1024, 1024}),
     gemm_kind("universal"),
     conv_kind("fprop"),
@@ -127,7 +133,11 @@ struct Options {
     { }
 
   bool valid() {
-    return true;
+    if (alignment != 1 && alignment != 2 && alignment != 4 && alignment != 8 && alignment != 16) {
+      std::cout << "Invalide alignment: " << alignment << std::endl;
+      return false;
+    }
+      return true;
   }
 
   // Parses the command line
@@ -136,6 +146,10 @@ struct Options {
 
     if (cmd.check_cmd_line_flag("help")) {
       help = true;
+    }
+
+    if (cmd.check_cmd_line_flag("all")) {
+      all = true;
     }
 
     cmd.get_cmd_line_argument("batch", batch_count);
@@ -152,6 +166,8 @@ struct Options {
 
     cmd.get_cmd_line_argument("cc_major", cc_major);
     cmd.get_cmd_line_argument("cc_minor", cc_minor);
+
+    cmd.get_cmd_line_argument("alignment", alignment);
 
     cmd.get_cmd_line_argument("m", problem_size.m());
     cmd.get_cmd_line_argument("n", problem_size.n());
@@ -170,6 +186,7 @@ struct Options {
         << "  This example uses the CUTLASS Library to execute GEMM computations.\n\n"
         << "Options:\n\n"
         << "  --help                      If specified, displays this usage statement.\n\n"
+        << "  --all                       If specified, print all possible kernels.\n\n"
         << "Common options:\n"
         << "  --operation <string>        GEMM or Conv\n"
         << "  --A <string>                Matrix A data type\n"
@@ -177,6 +194,7 @@ struct Options {
         << "  --C <string>                Matrix C data type\n"
         << "  --accum <string>            Accumulator data type\n"
         << "  --batch <int>               Number of GEMM operations executed in one batch\n"
+        << "  --alignment <int>           Alignment\n"
         << "  --cc_major <int>            Major part of target device compute capability. If not set, take the current device as the target device\n"
         << "  --cc_minor <int>            Minor part of target device compute capability. If not set, take the current device as the target device\n\n"
         << "GEMM options:\n"
@@ -329,28 +347,6 @@ public:
     parse_type_layout(options.C, type_C, layout_C);
     parse_type_layout(options.accum, type_accum, layout_accum);
 
-    // Allocate device memory for GEMM
-    void *ptr_A = allocate_matrix(type_A, "A");
-    void *ptr_B = allocate_matrix(type_B, "B");
-    void *ptr_C = allocate_matrix(type_C, "C");
-    void *ptr_D = allocate_matrix(type_C, "D");
-    allocate_matrix(type_accum, "null");
-
-
-    int64_t batch_stride_A = int64_t(problem_size.m()) * problem_size.k();
-    int64_t batch_stride_B = int64_t(problem_size.k()) * problem_size.n();
-    int64_t batch_stride_C = int64_t(problem_size.m()) * problem_size.n();
-    int64_t batch_stride_D = int64_t(problem_size.m()) * problem_size.n();
-
-    using LayoutA = cutlass::layout::ColumnMajor;
-    using LayoutB = cutlass::layout::ColumnMajor;
-    using LayoutC = cutlass::layout::ColumnMajor;
-
-    int lda = LayoutA::packed({problem_size.m(), problem_size.k()}).stride(0);
-    int ldb = LayoutB::packed({problem_size.k(), problem_size.n()}).stride(0);
-    int ldc = LayoutC::packed({problem_size.m(), problem_size.n()}).stride(0);
-    int ldd = LayoutC::packed({problem_size.m(), problem_size.n()}).stride(0);
-
     cutlass::library::GemmKind gemmkind;
     for (auto const & possible : GemmKind_enumerants) {
       if ((options.gemm_kind.compare(possible.text) == 0) ||
@@ -360,44 +356,70 @@ public:
       }
     }
 
-    auto operation = handle.find_gemm_kernel(
-        cutlass::library::GemmUniversalMode::kGemm,
+    if (options.all) {
+      auto operations = handle.find_all_gemm_kernels(
+          cutlass::library::GemmUniversalMode::kGemm,
 
-        problem_size.m(), // GEMM M dimension
-        problem_size.n(), // GEMM N dimension
-        problem_size.k(), // GEMM K dimension
+          type_accum, // Base data type of complex-valued accumulation
+          type_accum, // Base data type of complex-valued alpha/beta scalars
 
-        type_accum, // Base data type of complex-valued accumulation
-        type_accum, // Base data type of complex-valued alpha/beta scalars
+          type_A,                                    // Base data type of complex-valued A matrix
+          layout_A,                                  // Layout of A matrix
+          cutlass::library::ComplexTransform::kNone, // Complex transformation on A matrix operand
 
-        type_A,                                    // Base data type of complex-valued A matrix
-        layout_A,                                  // Layout of A matrix
-        cutlass::library::ComplexTransform::kNone, // Complex transformation on A matrix operand
-        ptr_A,                                     // Pointer to A matrix in Global Memory
-        lda,                                       // Leading dimension of A matrix
+          type_B,                                    // Base data type of complex-valued B matrix
+          layout_B,                                  // Layout of B matrix
+          cutlass::library::ComplexTransform::kNone, // Complex transformation on B matrix operand
 
-        type_B,                                    // Base data type of complex-valued B matrix
-        layout_B,                                  // Layout of B matrix
-        cutlass::library::ComplexTransform::kNone, // Complex transformation on B matrix operand
-        ptr_B,                                     // Pointer to B matrix in Global Memory
-        ldb,                                       // Leading dimension of B matrix
+          type_C, // Base data type of complex valued C and D matrices
 
-        type_C, // Base data type of complex valued C and D matrices
+          cc_major, /// Compute capability major
+          cc_minor, /// Compute capability minor
 
-        ptr_C, // Pointer to C matrix
-        ldc,   // Leading dimension of C matrix
+          gemmkind,
 
-        ptr_D,    // Pointer to D matrix
-        ldd,      // Leading dimension of D matrix
-        cc_major, /// Compute capability major
-        cc_minor,  /// Compute capability minor
+          options.alignment);
+      if (! operations.empty()) {
+        std::cout << "Recently executed '";
+        bool first = true;
+        for (auto op: operations) {
+          if (first) {
+            first = false;
+          } else {
+            std::cout << ",";
+          }
+          std::cout << op->description().name;
+        }
+        std::cout << "'" << std::endl;
+      }
+    } else {
+      auto operation = handle.find_gemm_kernel(
+          cutlass::library::GemmUniversalMode::kGemm,
 
-        gemmkind
-    );
+          type_accum, // Base data type of complex-valued accumulation
+          type_accum, // Base data type of complex-valued alpha/beta scalars
 
-    if (operation) {
-      std::cout << "Recently executed '" << operation->description().name << "'" << std::endl;
+          type_A,                                    // Base data type of complex-valued A matrix
+          layout_A,                                  // Layout of A matrix
+          cutlass::library::ComplexTransform::kNone, // Complex transformation on A matrix operand
+
+          type_B,                                    // Base data type of complex-valued B matrix
+          layout_B,                                  // Layout of B matrix
+          cutlass::library::ComplexTransform::kNone, // Complex transformation on B matrix operand
+
+          type_C, // Base data type of complex valued C and D matrices
+
+          cc_major, /// Compute capability major
+          cc_minor, /// Compute capability minor
+
+          gemmkind,
+
+          options.alignment);
+      if (operation) {
+        std::cout << "Recently executed '" << operation->description().name << "'" << std::endl;
+      }
     }
+
     return result;
   }
 
@@ -426,31 +448,68 @@ public:
     cutlass::library::IteratorAlgorithmID iterator_algorithm;
     iterator_algorithm = cutlass::library::from_string<cutlass::library::IteratorAlgorithmID>(options.iterator_algorithm);
 
-    auto operation = handle.find_conv_kernel(
-        cutlass::library::OperationKind::kConv2d,
-        conv_kind,
+    if (options.all) {
+      auto operations = handle.find_all_conv_kernels(
+          cutlass::library::OperationKind::kConv2d,
+          conv_kind,
 
-        type_A,                               // Base data type of complex-valued A matrix
-        layout_A,                             // Layout of A matrix
+          type_A,   // Base data type of complex-valued A matrix
+          layout_A, // Layout of A matrix
 
-        type_B,                               // Base data type of complex-valued B matrix
-        layout_B,                             // Layout of B matrix
+          type_B,   // Base data type of complex-valued B matrix
+          layout_B, // Layout of B matrix
 
-        type_C,                               // Base data type of complex valued C and D matrices
-        layout_C,                             // Layout of C matrix
+          type_C,   // Base data type of complex valued C and D matrices
+          layout_C, // Layout of C matrix
 
-        type_accum,                           // Base data type of complex-valued accumulation
-        type_accum,                           // Base data type of complex-valued alpha/beta scalars
+          type_accum, // Base data type of complex-valued accumulation
+          type_accum, // Base data type of complex-valued alpha/beta scalars
 
-        iterator_algorithm,
+          iterator_algorithm,
 
-        cc_major,                             /// Compute capability major
-        cc_minor                              /// Compute capability minor
-    );
+          cc_major, /// Compute capability major
+          cc_minor  /// Compute capability minor
+      );
+      if (! operations.empty()) {
+        std::cout << "Recently executed '";
+        bool first = true;
+        for (auto op: operations) {
+          if (first) {
+            first = false;
+          } else {
+            std::cout << ",";
+          }
+          std::cout << op->description().name;
+        }
+        std::cout << "'" << std::endl;
+      }
+    } else {
+      auto operation = handle.find_conv_kernel(
+          cutlass::library::OperationKind::kConv2d,
+          conv_kind,
 
-    if (operation) {
-      std::cout << "Recently executed '" << operation->description().name << "'" << std::endl;
+          type_A,   // Base data type of complex-valued A matrix
+          layout_A, // Layout of A matrix
+
+          type_B,   // Base data type of complex-valued B matrix
+          layout_B, // Layout of B matrix
+
+          type_C,   // Base data type of complex valued C and D matrices
+          layout_C, // Layout of C matrix
+
+          type_accum, // Base data type of complex-valued accumulation
+          type_accum, // Base data type of complex-valued alpha/beta scalars
+
+          iterator_algorithm,
+
+          cc_major, /// Compute capability major
+          cc_minor  /// Compute capability minor
+      );
+      if (operation) {
+        std::cout << "Recently executed '" << operation->description().name << "'" << std::endl;
+      }
     }
+    
     return result;
   }
 };

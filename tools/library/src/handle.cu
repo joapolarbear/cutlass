@@ -1065,13 +1065,10 @@ Status Handle::gemm_planar_complex_array(
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+
 Operation const*  Handle::find_gemm_kernel(
 
   GemmUniversalMode mode,                   /// indicates the mode in which the kUniversal GEMM is launched
-
-  int M,                                    /// GEMM M dimension
-  int N,                                    /// GEMM N dimension
-  int K,                                    /// GEMM K dimension
 
   NumericTypeID element_compute,            /// Data type of internal accumulation
 
@@ -1081,28 +1078,18 @@ Operation const*  Handle::find_gemm_kernel(
   LayoutTypeID layout_A,                    /// Layout of A matrix
   ComplexTransform transform_A,             /// Complex transformation applied to A matrix - ignored for real-valued matrices
 
-  void const * ptr_A,                       /// Pointer to A matrix in Global Memory
-  int lda,                                  /// Leading dimension of A matrix
-
   NumericTypeID element_B,                  /// Data type of B matrix elements
   LayoutTypeID layout_B,                    /// Layout of B matrix
   ComplexTransform transform_B,             /// Complex transformation applied to B matrix - ignored for real-valued matrices
 
-  void const * ptr_B,                       /// Pointer to B matrix in Global Memory
-  int ldb,                                  /// Leading dimension of B matrix
-
   NumericTypeID element_C,                  /// Data type of C and D matrices
-
-  void const * ptr_C,                       /// Pointer to C matrix
-  int ldc,                                  /// Leading dimension of C matrix
-
-  void * ptr_D,                             /// Pointer to D matrix
-  int ldd,                                  /// Leading dimension of D matrix
 
   const int cc_major,                           /// Compute capability major
   const int cc_minor,                           /// Compute capability minor
 
-  const GemmKind gemmkind
+  const GemmKind gemmkind,
+
+  int alignment
 
 ) {
   
@@ -1146,35 +1133,6 @@ Operation const*  Handle::find_gemm_kernel(
   }
 
   //
-  // Compute the largest alignment restriction the kernel can satisfy.
-  //
-
-  // Maximum alignment expectation among all kernels (in units of bytes)
-  int const kMaximumAlignmentSize = 16;
-
-  void const *ptr_A_check = ptr_A;
-  void const *ptr_B_check = ptr_B;
-  void const *ptr_C_check = ptr_C;
-  void *      ptr_D_check = ptr_D;
-
-  // Ignore alignment of pointers to pointers. We can't check this from the host,
-  // as each batch index has its own pointer in device memory.
-  if (mode == GemmUniversalMode::kArray) {
-    ptr_A_check = nullptr; 
-    ptr_B_check = nullptr; 
-    ptr_C_check = nullptr; 
-    ptr_D_check = nullptr; 
-  }
-
-  int alignment = gemm_problem_alignment(
-    M, N, K, 
-    element_A, ptr_A_check, lda, 0,
-    element_B, ptr_B_check, ldb, 0,
-    element_C, ptr_C_check, ldc, 0,
-    ptr_D_check, ldd, 0, kMaximumAlignmentSize
-  );
-
-  //
   // Find the best kernel in descending order of preference.
   //
 
@@ -1183,8 +1141,126 @@ Operation const*  Handle::find_gemm_kernel(
   return find_gemm_operation(operators_it, preference_key);
 }
 
+//
+// Find all operations meeting the requirements
+//
 
-/// find convolutional operations
+std::vector<Operation const *>  Handle::find_all_gemm_kernels(
+
+  GemmUniversalMode mode,                   /// indicates the mode in which the kUniversal GEMM is launched
+
+  NumericTypeID element_compute,            /// Data type of internal accumulation
+
+  NumericTypeID element_scalar,             /// Data type of alpha/beta scalars
+
+  NumericTypeID element_A,                  /// Data type of A matrix elements
+  LayoutTypeID layout_A,                    /// Layout of A matrix
+  ComplexTransform transform_A,             /// Complex transformation applied to A matrix - ignored for real-valued matrices
+
+  NumericTypeID element_B,                  /// Data type of B matrix elements
+  LayoutTypeID layout_B,                    /// Layout of B matrix
+  ComplexTransform transform_B,             /// Complex transformation applied to B matrix - ignored for real-valued matrices
+
+  NumericTypeID element_C,                  /// Data type of C and D matrices
+
+  const int cc_major,                           /// Compute capability major
+  const int cc_minor,                           /// Compute capability minor
+
+  const GemmKind gemmkind,
+
+  int alignment
+
+) {
+  
+  //
+  // Find the operation
+  //
+
+  GemmFunctionalKey key(
+    provider_,
+    gemmkind,
+    element_compute,
+    element_scalar,
+    element_A,
+    layout_A,
+    transform_A,
+    element_B,
+    layout_B,
+    transform_B,
+    element_C
+  );
+
+  std::vector<Operation const *> operations;
+
+  auto operators_it = Singleton::get().operation_table.gemm_operations.find(key);
+  std::cout << "Search gemm kernels for " << key << std::endl;
+  if (operators_it == Singleton::get().operation_table.gemm_operations.end()) {
+    std::cout << "Can not find the key among "
+              << Singleton::get().operation_table.gemm_operations.size()
+              << " keys" << std::endl;
+    for (auto gemm_operation : Singleton::get().operation_table.gemm_operations)
+    {
+      auto gemm_func = gemm_operation.first;
+      if (gemm_func.gemm_kind != GemmKind::kUniversal && gemm_func.gemm_kind != GemmKind::kPlanarComplex
+         && gemm_func.gemm_kind != GemmKind::kPlanarComplexArray && gemm_func.provider == provider_)
+        std::cout << gemm_func << std::endl;
+    }
+    std::cout << "Current key " << key << std::endl;
+    return operations;
+  }
+  
+  if (operators_it->second.empty()) {
+    return operations;
+  }
+
+  //
+  // Find the best kernel in descending order of preference.
+  //
+
+  GemmPreferenceKey preference_key(compute_capability(cc_major, cc_minor), alignment);
+
+  //
+  // find all operations that satisfy the requirements
+  //
+
+  auto cc_it = operators_it->second.upper_bound(preference_key);
+
+  if (cc_it == operators_it->second.begin()) {
+    return operations;
+  }
+
+  // Search in descending order of compute capability
+  do {
+    --cc_it;
+
+    // Search tile sizes in order, for now.
+    for (auto const * op : cc_it->second) {
+
+      GemmDescription const &desc = static_cast<GemmDescription const &>(op->description());
+
+      int min_cc = desc.tile_description.minimum_compute_capability;
+      int max_cc = desc.tile_description.maximum_compute_capability;
+
+      int op_alignment = maximum_alignment_requirement(desc);
+
+      if ((min_cc <= preference_key.compute_capability) &&
+        (preference_key.compute_capability <= max_cc) &&
+        (op_alignment <= preference_key.alignment)) {
+
+        operations.push_back(op);
+
+      }
+    }
+  } while (cc_it != operators_it->second.begin());
+
+  return operations;
+}
+
+
+//
+// find convolutional operations
+//
+
 Operation const* Handle::find_conv_kernel(
     OperationKind kind,                           /// kConv2d or kConv3d
     library::ConvKind conv_kind,                  /// kFprop, kDgrad or kWgrad
@@ -1281,6 +1357,110 @@ Operation const* Handle::find_conv_kernel(
   } while (!operation && cc_it != operators_it->second.begin());
 
   return operation;
+}
+
+
+//
+// find all convolutional operations that meets the requirements
+//
+
+std::vector<Operation const *> Handle::find_all_conv_kernels(
+    OperationKind kind,                           /// kConv2d or kConv3d
+    library::ConvKind conv_kind,                  /// kFprop, kDgrad or kWgrad
+
+    NumericTypeID element_A,                      /// Data type of A matrix elements
+    LayoutTypeID layout_A,                        /// Layout of A matrix
+
+    NumericTypeID element_B,                      /// Data type of B matrix elements
+    LayoutTypeID layout_B,                        /// Layout of B matrix
+
+    NumericTypeID element_C,                      /// Data type of C and D matrices
+    LayoutTypeID layout_C,                        /// Layout of C matrix
+    
+    NumericTypeID element_accumulator,            /// Data type of internal accumulation   
+    NumericTypeID element_compute,   
+    IteratorAlgorithmID iterator_algorithm,       /// Internal algorithm, analytic or optimized
+
+    const int cc_major,                           /// Compute capability major
+    const int cc_minor                            /// Compute capability minor
+) {
+
+  std::vector<Operation const *> operations;
+
+  // find conv operation to match conv output and reduction workspace data type
+  ConvFunctionalKey key(
+    library::Provider::kCUTLASS,
+    conv_kind,        
+    element_A,
+    layout_A,
+    element_A,
+    layout_B,
+    element_C,
+    layout_C,
+    element_accumulator, 
+    element_compute);
+
+  std::cout << "Search conv kernels for " << key << std::endl;
+  // conv operation table for conv2d or conv3d
+  auto conv_operations = (kind == OperationKind::kConv2d) ? 
+                          Singleton::get().operation_table.conv2d_operations : 
+                          Singleton::get().operation_table.conv3d_operations;
+
+  // find ConvFunctionalKey in convolution operation table
+  auto operators_it = conv_operations.find(key);
+
+  if (operators_it == conv_operations.end()) {
+    std::cout << "Can not find the key among "
+              << conv_operations.size()
+              << " keys" << std::endl;
+    for (auto conv_operation : conv_operations)
+    {
+      auto conv_func = conv_operation.first;
+      if (conv_func.conv_kind == conv_kind && conv_func.provider == library::Provider::kCUTLASS)
+        std::cout << conv_func << std::endl;
+    }
+    std::cout << "Current key " << key << std::endl;
+    return operations;
+  }
+  
+  if (operators_it->second.empty()) {
+    return operations;
+  }
+
+  // conv operation for same compute capability and iterator algorithm
+  ConvPreferenceKey preference_key(
+      compute_capability(cc_major, cc_minor),
+      iterator_algorithm);
+
+  auto cc_it = operators_it->second.upper_bound(preference_key);
+
+  if (cc_it == operators_it->second.begin()) {
+    return operations;
+  }
+
+  // Search in descending order of compute capability
+  do {
+    --cc_it;
+
+    // Search tile sizes in order, for now.
+    for (auto const * op : cc_it->second) {
+
+      ConvDescription const &desc = static_cast<ConvDescription const &>(op->description());
+
+      int min_cc = desc.tile_description.minimum_compute_capability;
+      int max_cc = desc.tile_description.maximum_compute_capability;
+
+      if ((min_cc <= preference_key.compute_capability) &&
+        (preference_key.compute_capability <= max_cc) &&
+        (desc.iterator_algorithm <= preference_key.iterator_algorithm)) {
+
+        operations.push_back(op);
+
+      }
+    }
+  } while (cc_it != operators_it->second.begin());
+
+  return operations;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

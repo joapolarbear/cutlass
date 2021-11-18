@@ -332,13 +332,9 @@ public:
   /// Only find operations, not run them
   ///
   /// Find gemm operations
-  Operation const*  find_gemm_kernel(
+  Operation const* find_gemm_kernel(
 
     GemmUniversalMode mode,                   /// indicates the mode in which the kUniversal GEMM is launched
-
-    int M,                                    /// GEMM M dimension
-    int N,                                    /// GEMM N dimension
-    int K,                                    /// GEMM K dimension
 
     NumericTypeID element_compute,            /// Data type of internal accumulation
 
@@ -348,28 +344,46 @@ public:
     LayoutTypeID layout_A,                    /// Layout of A matrix
     ComplexTransform transform_A,             /// Complex transformation applied to A matrix - ignored for real-valued matrices
 
-    void const * ptr_A,                       /// Pointer to A matrix in Global Memory
-    int lda,                                  /// Leading dimension of A matrix
+    NumericTypeID element_B,                  /// Data type of B matrix elements
+    LayoutTypeID layout_B,                    /// Layout of B matrix
+    ComplexTransform transform_B,             /// Complex transformation applied to B matrix - ignored for real-valued matrices
+
+    NumericTypeID element_C,                  /// Data type of C and D matrices
+
+    const int cc_major,                           /// Compute capability major
+    const int cc_minor,                           /// Compute capability minor
+
+    const GemmKind gemmkind,
+
+    int alignment
+
+  );
+
+  std::vector<Operation const *> find_all_gemm_kernels(
+
+    GemmUniversalMode mode,                   /// indicates the mode in which the kUniversal GEMM is launched
+
+    NumericTypeID element_compute,            /// Data type of internal accumulation
+
+    NumericTypeID element_scalar,             /// Data type of alpha/beta scalars
+
+    NumericTypeID element_A,                  /// Data type of A matrix elements
+    LayoutTypeID layout_A,                    /// Layout of A matrix
+    ComplexTransform transform_A,             /// Complex transformation applied to A matrix - ignored for real-valued matrices
 
     NumericTypeID element_B,                  /// Data type of B matrix elements
     LayoutTypeID layout_B,                    /// Layout of B matrix
     ComplexTransform transform_B,             /// Complex transformation applied to B matrix - ignored for real-valued matrices
 
-    void const * ptr_B,                       /// Pointer to B matrix in Global Memory
-    int ldb,                                  /// Leading dimension of B matrix
-
     NumericTypeID element_C,                  /// Data type of C and D matrices
-
-    void const * ptr_C,                       /// Pointer to C matrix
-    int ldc,                                  /// Leading dimension of C matrix
-
-    void * ptr_D,                             /// Pointer to D matrix
-    int ldd,                                  /// Leading dimension of D matrix
 
     const int cc_major,                           /// Compute capability major
     const int cc_minor,                           /// Compute capability minor
 
-    const GemmKind gemmkind
+    const GemmKind gemmkind,
+
+    int alignment
+
   );
 
   /// Find convolutional operations
@@ -393,7 +407,30 @@ public:
     const int cc_major,                           /// Compute capability major
     const int cc_minor                            /// Compute capability minor
   );
+
+  std::vector<Operation const *> find_all_conv_kernels(
+      OperationKind kind,                           /// kConv2d or kConv3d
+      library::ConvKind conv_kind,                  /// kFprop, kDgrad or kWgrad
+
+      NumericTypeID element_A,                      /// Data type of A matrix elements
+      LayoutTypeID layout_A,                        /// Layout of A matrix
+
+      NumericTypeID element_B,                      /// Data type of B matrix elements
+      LayoutTypeID layout_B,                        /// Layout of B matrix
+
+      NumericTypeID element_C,                      /// Data type of C and D matrices
+      LayoutTypeID layout_C,                        /// Layout of C matrix
+      
+      NumericTypeID element_accumulator,            /// Data type of internal accumulation   
+      NumericTypeID element_compute,   
+      IteratorAlgorithmID iterator_algorithm,       /// Internal algorithm, analytic or optimized
+
+      const int cc_major,                           /// Compute capability major
+      const int cc_minor                            /// Compute capability minor
+  );
+
 };
+ 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

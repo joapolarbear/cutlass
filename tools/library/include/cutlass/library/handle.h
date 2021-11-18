@@ -367,7 +367,9 @@ public:
     int ldd,                                  /// Leading dimension of D matrix
 
     const int cc_major,                           /// Compute capability major
-    const int cc_minor                            /// Compute capability minor
+    const int cc_minor,                           /// Compute capability minor
+
+    const GemmKind gemmkind
   );
 
   /// Find convolutional operations

@@ -68,6 +68,18 @@ struct Result {
     runtime_ms(runtime_ms), gflops(gflops), status(status), error(error), passed(true) { }
 };
 
+static struct {
+  char const *text;
+  char const *pretty;
+  cutlass::library::GemmKind enumerant;
+} GemmKind_enumerants[] = {
+    {"gemm", "<gemm>", cutlass::library::GemmKind::kGemm},
+    {"sparse", "<sparse>", cutlass::library::GemmKind::kSparse},
+    {"universal", "<universal>", cutlass::library::GemmKind::kUniversal},
+    {"complex", "<complex>", cutlass::library::GemmKind::kPlanarComplex},
+    {"complexarray", "<complexarray>", cutlass::library::GemmKind::kPlanarComplexArray},
+};
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Command line options parsing
@@ -90,6 +102,7 @@ struct Options {
   std::string operation;
   // GEMM options
   cutlass::gemm::GemmCoord problem_size;
+  std::string gemm_kind;
 
   // Conv options
   std::string conv_kind;
@@ -104,10 +117,11 @@ struct Options {
     accum("f32"),
     batch_count(1),
     alpha(1),
-    beta(),
+    beta(1),
     cc_major(-1),
     cc_minor(-1),
     problem_size({1024, 1024, 1024}),
+    gemm_kind("universal"),
     conv_kind("fprop"),
     iterator_algorithm("analytic")
     { }
@@ -142,6 +156,8 @@ struct Options {
     cmd.get_cmd_line_argument("m", problem_size.m());
     cmd.get_cmd_line_argument("n", problem_size.n());
     cmd.get_cmd_line_argument("k", problem_size.k());
+
+    cmd.get_cmd_line_argument("gemm_kind", gemm_kind);
 
     cmd.get_cmd_line_argument("conv_kind", conv_kind);
     cmd.get_cmd_line_argument("iter_algo", iterator_algorithm);
@@ -335,6 +351,15 @@ public:
     int ldc = LayoutC::packed({problem_size.m(), problem_size.n()}).stride(0);
     int ldd = LayoutC::packed({problem_size.m(), problem_size.n()}).stride(0);
 
+    cutlass::library::GemmKind gemmkind;
+    for (auto const & possible : GemmKind_enumerants) {
+      if ((options.gemm_kind.compare(possible.text) == 0) ||
+          (options.gemm_kind.compare(possible.pretty) == 0)) {
+        gemmkind = possible.enumerant;
+        break;
+      }
+    }
+
     auto operation = handle.find_gemm_kernel(
         cutlass::library::GemmUniversalMode::kGemm,
 
@@ -365,7 +390,9 @@ public:
         ptr_D,    // Pointer to D matrix
         ldd,      // Leading dimension of D matrix
         cc_major, /// Compute capability major
-        cc_minor  /// Compute capability minor
+        cc_minor,  /// Compute capability minor
+
+        gemmkind
     );
 
     if (operation) {

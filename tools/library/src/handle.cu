@@ -1100,7 +1100,10 @@ Operation const*  Handle::find_gemm_kernel(
   int ldd,                                  /// Leading dimension of D matrix
 
   const int cc_major,                           /// Compute capability major
-  const int cc_minor                            /// Compute capability minor
+  const int cc_minor,                           /// Compute capability minor
+
+  const GemmKind gemmkind
+
 ) {
   
   //
@@ -1109,7 +1112,7 @@ Operation const*  Handle::find_gemm_kernel(
 
   GemmFunctionalKey key(
     provider_,
-    GemmKind::kUniversal,
+    gemmkind,
     element_compute,
     element_scalar,
     element_A,
@@ -1130,7 +1133,8 @@ Operation const*  Handle::find_gemm_kernel(
     for (auto gemm_operation : Singleton::get().operation_table.gemm_operations)
     {
       auto gemm_func = gemm_operation.first;
-      if (gemm_func.gemm_kind == GemmKind::kUniversal && gemm_func.provider == provider_)
+      if (gemm_func.gemm_kind != GemmKind::kUniversal && gemm_func.gemm_kind != GemmKind::kPlanarComplex
+         && gemm_func.gemm_kind != GemmKind::kPlanarComplexArray && gemm_func.provider == provider_)
         std::cout << gemm_func << std::endl;
     }
     std::cout << "Current key " << key << std::endl;
